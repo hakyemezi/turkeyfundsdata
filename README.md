@@ -15,7 +15,7 @@ print(fund_df)
 This retrieves and prints six months of data for the fund type "YAT".
 
 ### scrapeKAP.py
-**Purpose:** Scrapes general information about investment funds from [KAP (Public Disclosure Platform).](https://www.kap.org.tr/)
+**Purpose:** Scrapes general information about investment funds from [KAP (Public Disclosure Platform)](https://www.kap.org.tr/)
 
 **Description:** The script fetches information such as the fund’s code, title, founder, manager, ISIN, risk level, and IPO date.
 The data is retrieved by scraping multiple pages of the KAP website, consolidating details into a structured format suitable for further analysis.
@@ -48,5 +48,5 @@ pip install -r requirements.txt
 Contributions are welcome! If you find any issues or have ideas for enhancements, feel free to open an issue or submit a pull request.
 
 ## License
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/hakyemezi/turkeyfundsdata?tab=MIT-1-ov-file) file for details.
 
