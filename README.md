@@ -41,6 +41,7 @@ pip install -r requirements.txt
 
 ## Notes
 **Data Source Reliability:** The data is sourced directly from the official websites, ensuring accuracy and relevance. However, any changes in the website structure may require updates to the scripts.
+
 **Customization:** The scripts can be customized to retrieve specific data points or to handle larger datasets by adjusting the parameters and modifying the code accordingly.
 
 ## Contributions
