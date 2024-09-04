@@ -2,7 +2,7 @@
 This repository contains two Python scripts that retrieve and process data related to investment funds in Turkey. These scripts are designed to fetch fund prices, asset distributions, and general fund information from publicly available sources.
 ## Scripts
 ### tefas.py
-**Purpose:** Retrieves fund prices and asset distributions from TEFAS (Turkish Electronic Fund Trading Platform).
+**Purpose:** Retrieves fund prices and asset distributions from [TEFAS (Turkish Electronic Fund Trading Platform)](https://www.tefas.gov.tr/)
 
 **Description:** The script fetches and merges data related to fund prices and asset allocations based on user-specified parameters such as fund type, start date, and end date.
 It supports retrieving data for specific date ranges and allows for easy analysis and visualization of the fund's historical performance.
@@ -15,7 +15,7 @@ print(fund_df)
 This retrieves and prints six months of data for the fund type "YAT".
 
 ### scrapeKAP.py
-**Purpose:** Scrapes general information about investment funds from KAP (Public Disclosure Platform).
+**Purpose:** Scrapes general information about investment funds from [KAP (Public Disclosure Platform).](https://www.kap.org.tr/)
 
 **Description:** The script fetches information such as the fund’s code, title, founder, manager, ISIN, risk level, and IPO date.
 The data is retrieved by scraping multiple pages of the KAP website, consolidating details into a structured format suitable for further analysis.
