@@ -46,7 +46,3 @@ pip install -r requirements.txt
 
 ## Contributions
 Contributions are welcome! If you find any issues or have ideas for enhancements, feel free to open an issue or submit a pull request.
-
-## License
-This project is licensed under the MIT License. See the [LICENSE](https://github.com/hakyemezi/turkeyfundsdata?tab=MIT-1-ov-file) file for details.
-
