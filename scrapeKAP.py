@@ -1,3 +1,4 @@
+import time
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -5,6 +6,58 @@ import numpy as np
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.expand_frame_repr', False)
+
+# KAP was rebuilt and the old markup this script relied on is gone. The
+# "comp-cell _04 vtable" and "w-clearfix w-inline-block a-table-row" class
+# names no longer match anything. The pages now render real <table> elements,
+# so the tables are read directly instead of walking anchor tags by class.
+BASE_URL = "https://www.kap.org.tr/tr/YatirimFonlari/"
+ITEM_URL = "https://www.kap.org.tr/tr/fonlarTumKalemler/"
+
+# The site rejects requests without a browser user agent
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "tr,en;q=0.8",
+}
+
+# The item pages are several megabytes each, so requests are spaced out
+REQUEST_PAUSE = 0.5
+
+
+def get_rows(url):
+    """
+    Downloads a KAP page and returns the text of every table body row on it.
+
+    Parameters:
+    ------------
+    url : str
+        The KAP page to read.
+
+    Returns:
+    --------
+    list
+        A list of rows, where each row is a list of the cell texts.
+
+    Notes:
+    ------
+    - Header rows live in <thead> and are left out, so only data rows are returned.
+    - Cell text is stripped, which is enough because the values are short.
+    """
+    time.sleep(REQUEST_PAUSE)
+
+    response = requests.get(url, headers=HEADERS, timeout=60)
+    response.raise_for_status()  # Raise an error for bad status codes
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    rows = []
+    for tr in soup.select("table tbody tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+        if cells:
+            rows.append(cells)
+
+    return rows
+
 
 def fon_data(url_end):
     """
@@ -22,50 +75,20 @@ def fon_data(url_end):
 
     Notes:
     ------
-    - The function sends a GET request to the KAP website and parses the HTML content to extract the relevant fund data.
-    - The extracted data includes fund code, title, and founder, organized into a DataFrame.
+    - Every umbrella fund gets its own table on the page, and each row of those
+      tables holds the fund code, the fund name and the founder.
+    - Rows that do not have all three cells are skipped.
     """
-    base_url = "https://www.kap.org.tr/tr/YatirimFonlari/"
-    url = base_url + url_end
+    url = BASE_URL + url_end
 
-    # Send a GET request to the URL
-    response = requests.get(url)
-    response.raise_for_status()  # Raise an error for bad status codes
+    rows = get_rows(url)
 
-    # Parse the HTML content
-    soup = BeautifulSoup(response.text, 'html.parser')
+    data = [row[:3] for row in rows if len(row) >= 3]
 
-    # Find all href tags
-    href_tags = soup.find_all('a')
-
-    # Filter href tags based on parent element's class name
-    desired_classes = ["comp-cell _04 vtable", "comp-cell _08 vtable", "comp-cell _009 vtable"]
-    href_list = []
-
-    for tag in href_tags:
-        parent_class = tag.find_parent().get('class', [])
-        parent_class_name = " ".join(parent_class)  # Convert list of class names to single string
-        if parent_class_name in desired_classes:
-            href_list.append(tag.get_text(strip=True))
-
-    # Create a DataFrame to store the href values
-    data = {'Column1': [], 'Column2': [], 'Column3': []}
-
-    for i, href in enumerate(href_list):
-        remainder = (i + 1) % 3
-        if remainder == 1:
-            data['Column1'].append(href)
-            data['Column2'].append('')
-            data['Column3'].append('')
-        elif remainder == 2:
-            data['Column2'][-1] = href
-        elif remainder == 0:
-            data['Column3'][-1] = href
-
-    df = pd.DataFrame(data)
-    df.columns = ["CODE", "TITLE", "FOUNDER"]
+    df = pd.DataFrame(data, columns=["CODE", "TITLE", "FOUNDER"])
 
     return df
+
 
 def get_fund_detail(url_name):
     """
@@ -83,33 +106,17 @@ def get_fund_detail(url_name):
 
     Notes:
     ------
-    - This function sends a GET request to a specific KAP webpage and extracts relevant details using BeautifulSoup.
-    - The extracted data is organized into a DataFrame, with two columns representing different details of the fund.
+    - These pages hold one table with two columns, the fund name and the value
+      of the item being listed.
     """
-    # Send a GET request to the URL
-    response = requests.get(url_name)
-    response.raise_for_status()  # Raise an error for bad status codes
+    rows = get_rows(url_name)
 
-    # Parse the HTML content
-    soup = BeautifulSoup(response.text, 'html.parser')
+    data = [row[:2] for row in rows if len(row) >= 2]
 
-    # Extract text from each anchor tag and split it into parts
-    data = []
-
-    # Find all anchor tags with the specified class
-    anchor_tags = soup.find_all('a', class_=lambda x: x and ('w-clearfix w-inline-block a-table-row' in x))
-    for tag in anchor_tags:
-        span_tag = tag.find('span')
-        if span_tag:
-            span_text = span_tag.get_text(strip=True)
-            div_tags = tag.find_all('div', class_='comp-cell-row-div vtable infoColumn')
-            if len(div_tags) >= 1:
-                data.append([span_text, div_tags[0].get_text(strip=True)])
-
-    # Create a DataFrame to store the extracted data
     df = pd.DataFrame(data, columns=['Column1', 'Column2'])
 
     return df
+
 
 def get_fund_detail2(url_name):
     """
@@ -123,54 +130,33 @@ def get_fund_detail2(url_name):
     Returns:
     --------
     pd.DataFrame
-        A DataFrame containing detailed information about the funds, with multiple columns extracted from the webpage.
+        A DataFrame containing detailed information about the funds, with the
+        fund name and the value of the listed item.
 
     Notes:
     ------
-    - This function is similar to `get_fund_detail` but extracts more detailed information across multiple columns.
-    - The first row is used as the header for the DataFrame, and empty strings are replaced with `NaN`.
+    - This function is similar to `get_fund_detail` but reads the pages that
+      carry an extra "İhraç Sıra Numarası" column between the fund name and the
+      value, so the middle column is dropped.
+    - A fund with more than one issue spans several rows, and only its first
+      row repeats the fund name. The follow up rows have two cells instead of
+      three, so they take the name of the row above them.
     """
-    # Send a GET request to the URL
-    response = requests.get(url_name)
-    response.raise_for_status()  # Raise an error for bad status codes
+    rows = get_rows(url_name)
 
-    # Parse the HTML content
-    soup = BeautifulSoup(response.text, 'html.parser')
-
-    # Extract text from each anchor tag and split it into parts
     data = []
+    title = None
+    for row in rows:
+        if len(row) >= 3:
+            title = row[0]
+            data.append([title, row[2]])
+        elif len(row) == 2 and title is not None:
+            data.append([title, row[1]])
 
-    # Find all anchor tags with the specified class
-    anchor_tags = soup.find_all('a', class_=lambda x: x and ('w-clearfix w-inline-block a-table-row' in x))
-    for tag in anchor_tags:
-        span_tag = tag.find('span')
-        row_data = []
-        if span_tag:
-            span_text = span_tag.get_text(strip=True)
-            row_data.append(span_text)
-        div_tags = tag.find_all('div', class_='comp-cell-row-div vtable infoColumn')
-        for div_tag in div_tags:
-            row_data.append(div_tag.get_text(strip=True))
-        data.append(row_data)
-
-    # Create a DataFrame to store the extracted data
-    # Find the maximum length of row_data
-    max_columns = max(len(row) for row in data)
-
-    # Create column names dynamically
-    columns = [f'Column{i}' for i in range(1, max_columns + 1)]
-
-    # Create DataFrame
-    df = pd.DataFrame(data, columns=columns)
-
-    # Use the first row as the header
-    df.columns = df.iloc[0]
-    df = df[1:]
-
-    # Replace empty strings with pd.NA and drop columns with all NaN values
-    df = df.iloc[:, [0, 2]]
+    df = pd.DataFrame(data, columns=['Column1', 'Column2'])
 
     return df
+
 
 def get_all():
     """
@@ -185,6 +171,7 @@ def get_all():
     ------
     - The function collects data from different fund types and combines it into a single DataFrame.
     - Various additional details such as ISIN, manager, risk value, and more are fetched and merged into the final DataFrame.
+    - The fund title is used as the merge key, it matches across all of the pages.
     """
     url_ends = ['YF', 'EYF', 'OKS', 'BYF', 'GMF', 'GSF', 'YYF', 'VFF', 'KFF', 'PFF']
 
@@ -201,42 +188,46 @@ def get_all():
     data1.loc[data1['KIND'] == 'YYF', 'REPRESENTATIVE'] = data1['FOUNDER']
     data1.drop('FOUNDER', axis=1, inplace=True)
 
-    data2_founder1 = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_kurucu_unvan")
+    data2_founder1 = get_fund_detail(ITEM_URL + "kpy81_acc1_kurucu_unvan")
     data2_founder1.columns = ["TITLE", "FOUNDER"]
-    data2_founder2 = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_kurucu_unvan_2")
+    data2_founder2 = get_fund_detail(ITEM_URL + "kpy81_acc1_kurucu_unvan_2")
     data2_founder2.columns = ["TITLE", "FOUNDER"]
     data2_founder = pd.concat([data2_founder1, data2_founder2], ignore_index=True)
-    data2_pmc1 = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_portfoy_ticaret_unvan")
+
+    data2_pmc1 = get_fund_detail(ITEM_URL + "kpy81_acc1_portfoy_ticaret_unvan")
     data2_pmc1.columns = ["TITLE", "MANAGER"]
-    data2_pmc2 = get_fund_detail2("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_portfoy_yon_kurulus")
+    data2_pmc2 = get_fund_detail2(ITEM_URL + "kpy81_acc1_portfoy_yon_kurulus")
     data2_pmc2.columns = ["TITLE", "MANAGER"]
-    data2_pmc3 = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_yonetici_unvan")
+    data2_pmc3 = get_fund_detail(ITEM_URL + "kpy81_acc1_yonetici_unvan")
     data2_pmc3.columns = ["TITLE", "MANAGER"]
     data2_pmc = pd.concat([data2_pmc1, data2_pmc2, data2_pmc3], ignore_index=True)
 
-    data2_isin = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_ISIN")
+    data2_isin = get_fund_detail(ITEM_URL + "kpy81_acc1_ISIN")
     data2_isin.columns = ["TITLE", "ISIN"]
 
-    data2_rd = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_fonun_risk_degeri")
+    data2_rd = get_fund_detail(ITEM_URL + "kpy81_acc1_fonun_risk_degeri")
     data2_rd.columns = ["TITLE", "RD"]
 
-    data2_type = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_fon_tur")
+    data2_type = get_fund_detail(ITEM_URL + "kpy81_acc1_fon_tur")
     data2_type.columns = ["TITLE", "TYPE"]
 
-    data2_ini = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_fon_icerigi")
+    data2_ini = get_fund_detail(ITEM_URL + "kpy81_acc1_fon_icerigi")
     data2_ini.columns = ["TITLE", "INTEREST"]
 
-    data2_auditor = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_bdk")
+    data2_auditor = get_fund_detail(ITEM_URL + "kpy81_acc1_bdk")
     data2_auditor.columns = ["TITLE", "AUDITOR"]
 
-    data2_ipo1 = get_fund_detail("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_halka_arz1")
+    data2_ipo1 = get_fund_detail(ITEM_URL + "kpy81_acc1_halka_arz1")
     data2_ipo1.columns = ["TITLE", "IPO_DATE"]
-    data2_ipo2 = get_fund_detail2("https://www.kap.org.tr/tr/fonlarTumKalemler/kpy81_acc1_halka_arz2")
+    data2_ipo2 = get_fund_detail2(ITEM_URL + "kpy81_acc1_halka_arz2")
     data2_ipo2.columns = ["TITLE", "IPO_DATE"]
     data2_ipo = pd.concat([data2_ipo1, data2_ipo2], ignore_index=True)
     data2_ipo['IPO_DATE'] = data2_ipo['IPO_DATE'].apply(lambda x: np.nan if (x is None or '-' in x) else x)
 
+    # A fund can be listed more than once on the item pages, and duplicates
+    # would multiply rows on every merge, so they are dropped up front
     dfs = [data1, data2_founder, data2_isin, data2_rd, data2_pmc, data2_type, data2_ini, data2_auditor, data2_ipo]
+    dfs = [dfs[0]] + [df.drop_duplicates(subset='TITLE') for df in dfs[1:]]
 
     # Merge all DataFrames on the 'TITLE' column
     funds = dfs[0]
@@ -249,17 +240,8 @@ def get_all():
 
     return funds
 
-funds = get_all()
 
-funds.info()
+##examples:
+# funds = get_all()
 
-
-
-
-
-
-
-
-
-
-
+# funds.info()

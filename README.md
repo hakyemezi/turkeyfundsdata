@@ -7,6 +7,8 @@ This repository contains two Python scripts that retrieve and process data relat
 **Description:** The script fetches and merges data related to fund prices and asset allocations based on user-specified parameters such as fund type, start date, and end date.
 It supports retrieving data for specific date ranges and allows for easy analysis and visualization of the fund's historical performance.
 
+The API only answers requests that cover at most one month, and it returns an empty result rather than an error both for a longer range and for requests that arrive too quickly. `get_fund_data` therefore refuses ranges longer than 30 days, and `get_fund_data_for_years` splits the period into chunks and paces the requests.
+
 **Usage Example:**
 ```python
 fund_df = get_fund_data_for_years(0.5, "YAT")
@@ -31,7 +33,7 @@ This retrieves and prints the first few rows of a DataFrame containing comprehen
 **Clone the Repository:**
 ```bash
 git clone https://github.com/hakyemezi/turkeyfundsdata.git
-cd turkish-fund-data
+cd turkeyfundsdata
 ```
 **Install Required Packages: Ensure you have the necessary Python packages installed:**
 ```bash
@@ -40,7 +42,7 @@ pip install -r requirements.txt
 **Run the Scripts:** You can run each script directly in your Python environment. Ensure you have a working internet connection as the scripts fetch data from online sources.
 
 ## Notes
-**Data Source Reliability:** The data is sourced directly from the official websites, ensuring accuracy and relevance. However, any changes in the website structure may require updates to the scripts.
+**Data Source Reliability:** The data is sourced directly from the official websites, ensuring accuracy and relevance. However, any changes in the website structure may require updates to the scripts. Both sources have already changed once: the old `/api/DB/BindHistoryInfo` fund endpoints now answer 404 and were replaced, and KAP was rebuilt so the pages are read as HTML tables instead of by CSS class name.
 
 **Customization:** The scripts can be customized to retrieve specific data points or to handle larger datasets by adjusting the parameters and modifying the code accordingly.
 
