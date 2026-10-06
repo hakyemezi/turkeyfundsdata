@@ -199,3 +199,35 @@ Issues and pull requests are welcome, particularly if a data source changes and 
 ## License
 
 [MIT](LICENSE)
+
+## Reliability contract
+
+The examples and historical counts above describe earlier source observations; they are not current availability guarantees.
+
+- Missing numeric values remain missing. `TEDPAYSAYISI` remains numeric; only `FIYAT_6DEC` is a display string.
+- General and allocation data are outer-joined on fund code and date, with one-to-one validation. Renamed funds and unmatched records are retained. Conflicting duplicate keys raise an error.
+- Each single-period result includes `df.attrs['coverage']` with row counts, unmatched keys, title mismatches and status (`ok`, `partial`, `empty`). Empty responses are retried; HTTP, transport, JSON and schema failures raise `FetchError` after retries.
+- Date windows contain at most 30 **inclusive** days. The years argument must be greater than zero and at most five.
+- History retrieval defaults to strict mode: failed, unmatched or unresolved empty windows raise `IncompleteHistoryError`. To explicitly accept partial history:
+
+```python
+from tefas import get_fund_data_for_years
+
+df = get_fund_data_for_years(1, 'EMK', allow_partial=True)
+coverage = df.attrs['coverage']
+```
+
+Coverage describes request/merge completeness, not an independently verified trading calendar or fund universe. A genuine holiday-only window may be reported as unresolved empty. Persist the coverage dictionary separately if saving CSV; pandas attributes are not CSV columns. An entirely empty history now returns an empty DataFrame in partial mode, rather than `None`.
+
+KAP parsing raises on missing table rows and conflicting title duplicates. Exact duplicates are removed. Detail tables are joined to the fund list with one-to-one validation; unmatched detail titles and retrieval time are available in `funds.attrs['quality']`. The source detail pages identify funds by title, so this remains a title-based join: code/ISIN identity resolution requires an additional authoritative mapping and is not fabricated here. Original list founders are preserved when detail values are absent.
+
+## Installation and offline regression tests
+
+```sh
+python -m pip install -e '.[test]'
+python -m pytest -q tests
+```
+
+Tests mock the providers and exercise missing values, source failures, merge coverage, date windows and KAP ambiguity. They do not verify live endpoint availability.
+
+A GitHub Actions example is provided at `docs/ci-tests.example.yml`. It is not active: enabling it requires copying it to `.github/workflows/tests.yml` with credentials that can manage workflows. Local tests use the commands above.
