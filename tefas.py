@@ -52,54 +52,63 @@ ALLOCATION_KEY_COLUMNS = {
 }
 
 
+class FetchError(RuntimeError):
+    """The endpoint failed; this is not a valid empty response."""
+
+
+class IncompleteHistoryError(FetchError):
+    """A requested history contains failed or unresolved empty windows."""
+
+
 def post_json(url, body):
+    """Retry transport, JSON/schema errors and empty responses.
+
+    An all-empty sequence returns []; mixed errors/empty responses raise because
+    absence cannot be established. Empty results still need coverage review.
     """
-    Sends one request to the fund API and returns the rows it answered with.
-
-    Parameters:
-    ------------
-    url : str
-        The API endpoint to post to.
-    body : dict
-        The JSON payload describing the fund type and date range.
-
-    Returns:
-    --------
-    list
-        The list of records under "resultList", or an empty list if the
-        request kept failing.
-
-    Notes:
-    ------
-    - The API answers 200 with an empty result both when it is being called too
-      quickly and when it genuinely has no data, so an empty answer is retried
-      a few times before it is accepted as real.
-    - A non-200 answer is retried as well.
-    """
+    errors = []
     for attempt in range(MAX_RETRIES):
         time.sleep(REQUEST_PAUSE)
         try:
             response = requests.post(url, headers=HEADERS, json=body, timeout=60)
-        except requests.RequestException as error:
-            print(f"Request failed: {error}")
-            time.sleep(RETRY_PAUSE)
-            continue
-
-        if response.status_code != 200:
-            print(f"Request failed with status code {response.status_code}")
-            time.sleep(RETRY_PAUSE)
-            continue
-
-        rows = response.json().get("resultList") or []
-        if rows:
-            return rows
-
-        # Empty answer: back off and try again, it is usually throttling
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("resultList"), list):
+                raise ValueError("Expected a resultList array")
+            rows = payload["resultList"]
+            if not all(isinstance(row, dict) for row in rows):
+                raise ValueError("Expected resultList records")
+            if rows:
+                return rows
+        except (requests.RequestException, ValueError) as error:
+            errors.append(str(error))
         if attempt < MAX_RETRIES - 1:
-            print(f"Empty answer for {body['basTarih']}-{body['bitTarih']}, retrying")
             time.sleep(RETRY_PAUSE)
-
+    if errors:
+        raise FetchError(f"Failed to fetch {url}: {errors[-1]}")
     return []
+
+
+def _normalize_rows(rows, mapping):
+    frame = pd.json_normalize(rows).rename(columns=mapping)
+    required = ["TARIH", "FONKODU", "FONUNVAN"]
+    if frame.empty:
+        return pd.DataFrame(columns=required)
+    missing = set(required) - set(frame.columns)
+    if missing:
+        raise ValueError(f"Missing source columns: {sorted(missing)}")
+    frame["TARIH"] = pd.to_datetime(frame["TARIH"], errors="raise").dt.normalize()
+    if frame[required].isna().any().any():
+        raise ValueError("Null fund identity/date in source")
+    frame["FONKODU"] = frame["FONKODU"].astype(str).str.strip()
+    if frame["FONKODU"].eq("").any():
+        raise ValueError("Empty fund code in source")
+    frame = frame.drop_duplicates()
+    if frame.duplicated(["TARIH", "FONKODU"]).any():
+        raise ValueError("Conflicting records for the same fund and date")
+    for column in frame.columns.difference(required):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame
 
 
 def get_fund_data(fontip="EMK", sfontur="", fonkod="", fongrup="", bastarih="01.08.2026", bittarih="30.08.2026", fonturkod="", fonunvantip="", kurucukod="", dil="TR"):
@@ -140,15 +149,14 @@ def get_fund_data(fontip="EMK", sfontur="", fonkod="", fongrup="", bastarih="01.
       longer periods, it splits the period into chunks the API accepts.
     - Data is fetched from the API for the specified date range.
     - JSON data is normalized and converted into a DataFrame.
-    - Missing data is set to `NaN` and then filled with zero.
-    - Numerical columns in the DataFrame are properly formatted.
+    - Missing numeric data stays missing; numerical fields stay numeric.
+    - Source coverage and unmatched keys are recorded in DataFrame.attrs.
     """
     start = datetime.strptime(bastarih, "%d.%m.%Y")
     end = datetime.strptime(bittarih, "%d.%m.%Y")
 
-    if (end - start).days > MAX_CHUNK_DAYS:
-        print(f"Date range is longer than {MAX_CHUNK_DAYS} days, the API will return nothing. Use get_fund_data_for_years instead.")
-        return None
+    if end < start or (end - start).days >= MAX_CHUNK_DAYS:
+        raise ValueError(f"Use an ordered range of at most {MAX_CHUNK_DAYS} inclusive days")
 
     # The API wants missing parameters as null rather than as an empty string
     body = {
@@ -165,100 +173,74 @@ def get_fund_data(fontip="EMK", sfontur="", fonkod="", fongrup="", bastarih="01.
         "fonTurAciklama": None,
     }
 
-    info_rows = post_json(INFO_URL, body)
-    if not info_rows:
-        print(f"No fund information returned for {bastarih} - {bittarih}")
-        return None
-
-    df_info = pd.json_normalize(info_rows).rename(columns=INFO_COLUMNS)
-    df_info['TARIH'] = pd.to_datetime(df_info['TARIH'])
-
-    # Some fields arrive as null or as "-", so they are coerced to numbers
-    # first and only then filled, which keeps the columns out of object dtype
-    value_columns = [column for column in df_info.columns if column not in ['TARIH', 'FONKODU', 'FONUNVAN']]
-    df_info[value_columns] = df_info[value_columns].apply(pd.to_numeric, errors='coerce').fillna(0).astype('float64')
-    df_info['KISISAYISI'] = df_info['KISISAYISI'].astype(int)
-
-    allocation_rows = post_json(ALLOCATION_URL, body)
-    if not allocation_rows:
-        print(f"No allocation data returned for {bastarih} - {bittarih}")
-        return None
-
-    df_allocation = pd.json_normalize(allocation_rows).rename(columns=ALLOCATION_KEY_COLUMNS)
-    df_allocation['TARIH'] = pd.to_datetime(df_allocation['TARIH'])
-    if 'bilFiyat' in df_allocation.columns:
-        df_allocation = df_allocation.drop(columns=['bilFiyat'])
-
-    # The allocation endpoint returns short asset codes such as bb, hs, kh.
-    # They are upper cased so that they read like the other columns.
-    allocation_columns = [column for column in df_allocation.columns if column not in ['TARIH', 'FONKODU', 'FONUNVAN']]
-    df_allocation[allocation_columns] = df_allocation[allocation_columns].apply(pd.to_numeric, errors='coerce').fillna(0).astype('float64')
-    df_allocation = df_allocation.rename(columns={column: column.upper() for column in allocation_columns})
-
-    df_merged = pd.merge(df_info, df_allocation, on=['TARIH', 'FONKODU', 'FONUNVAN'])
-    df_merged.insert(loc=df_merged.columns.get_loc('FIYAT') + 1, column='FIYAT_6DEC', value=df_merged["FIYAT"])
-    df_merged["FIYAT_6DEC"] = df_merged["FIYAT_6DEC"].map(lambda x: "{:.6f}".format(x))
-    df_merged["TEDPAYSAYISI"] = df_merged["TEDPAYSAYISI"].map(lambda x: "{:.6f}".format(x))
-    return df_merged
+    info = _normalize_rows(post_json(INFO_URL, body), INFO_COLUMNS)
+    allocation = _normalize_rows(post_json(ALLOCATION_URL, body), ALLOCATION_KEY_COLUMNS)
+    allocation = allocation.drop(columns=["bilFiyat"], errors="ignore")
+    keys = ["TARIH", "FONKODU"]
+    allocation = allocation.rename(columns={
+        c: c.upper() for c in allocation.columns if c not in keys + ["FONUNVAN"]
+    })
+    merged = info.merge(allocation, on=keys, how="outer", suffixes=("", "_ALLOCATION"),
+                        validate="one_to_one", indicator=True)
+    title_mismatch = (merged["FONUNVAN"].notna() & merged["FONUNVAN_ALLOCATION"].notna()
+                      & merged["FONUNVAN"].ne(merged["FONUNVAN_ALLOCATION"]))
+    coverage = {
+        "start": start.date().isoformat(), "end": end.date().isoformat(),
+        "general_rows": len(info), "allocation_rows": len(allocation),
+        "general_only": int(merged["_merge"].eq("left_only").sum()),
+        "allocation_only": int(merged["_merge"].eq("right_only").sum()),
+        "title_mismatches": int(title_mismatch.sum()),
+        "unmatched_keys": merged.loc[merged["_merge"].ne("both"), keys]
+            .assign(TARIH=lambda x: x["TARIH"].astype(str)).to_dict("records"),
+    }
+    coverage["status"] = ("empty" if merged.empty else
+                          "partial" if coverage["general_only"] or coverage["allocation_only"]
+                          else "ok")
+    merged["FONUNVAN"] = merged["FONUNVAN"].combine_first(merged["FONUNVAN_ALLOCATION"])
+    merged = merged.drop(columns=["FONUNVAN_ALLOCATION", "_merge"])
+    # Preserve the historical display column without changing the numeric fields.
+    if "FIYAT" in merged:
+        merged["FIYAT_6DEC"] = merged["FIYAT"].map(
+            lambda value: f"{value:.6f}" if pd.notna(value) else None)
+    merged.attrs["coverage"] = coverage
+    return merged
 
 
-def get_fund_data_for_years(years, fontip):
+def get_fund_data_for_years(years, fontip, *, allow_partial=False, end_date=None):
+    """Fetch up to five years, using 30 inclusive days per request.
+
+    By default unresolved empty, partial or failed windows raise instead of
+    silently returning incomplete history. Opt in with allow_partial=True and
+    inspect result.attrs['coverage']; persist it separately when exporting CSV.
+    Coverage describes requests and joins, not a verified publication calendar.
     """
-    Fetches and combines fund data over a specified number of years.
+    import math
+    import warnings
 
-    Parameters:
-    ------------
-    years : float
-        Specifies how many years' worth of data to retrieve.
-        A maximum of 5 years can be specified. Example: 0.5 (6 months of data), 1 (1 year of data).
-    fontip : str
-        The type of the fund. Example: "YAT"
-
-    Returns:
-    --------
-    pd.DataFrame
-        Returns a final DataFrame that merges all fund data retrieved over the specified period.
-
-    Notes:
-    ------
-    - API requests are made in chunks to cover the specified period.
-    - Each request covers a maximum of 30 days, which is what the API accepts.
-    - Chunks that come back empty are skipped so that one bad window does not
-      lose the whole period.
-    - The results from all chunked requests are concatenated and returned as a single DataFrame.
-    """
-    if years > 5:
-        years = 5
-
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * years)
-
-    dataframes = []
-    chunk_start = start_date
-    while chunk_start < end_date:
-        chunk_end = chunk_start + timedelta(days=MAX_CHUNK_DAYS)
-        if chunk_end > end_date:
-            chunk_end = end_date
-
-        print(f"Fetching {chunk_start.strftime('%d.%m.%Y')} - {chunk_end.strftime('%d.%m.%Y')}")
-        fund_df = get_fund_data(fontip=fontip,
-                                bastarih=chunk_start.strftime('%d.%m.%Y'),
-                                bittarih=chunk_end.strftime('%d.%m.%Y'))
-        if fund_df is not None:
-            dataframes.append(fund_df)
-
-        chunk_start = chunk_end + timedelta(days=1)
-
-    if not dataframes:
-        print("No data could be retrieved for the requested period")
-        return None
-
-    final_df = pd.concat(dataframes, ignore_index=True)
-    final_df = final_df.drop_duplicates(subset=['TARIH', 'FONKODU'], ignore_index=True)
-    return final_df
-
-
-##examples:
-# fund_df = get_fund_data_for_years(0.5, "YAT")
-
-# fund_df = get_fund_data(fontip="YAT", bastarih="01.08.2026", bittarih="30.08.2026")
+    if not math.isfinite(years) or years <= 0 or years > 5:
+        raise ValueError("years must be finite, greater than zero and at most five")
+    end = pd.Timestamp(end_date or datetime.now()).normalize().to_pydatetime()
+    start = end - timedelta(days=max(1, int(365 * years)))
+    frames, windows = [], []
+    current = start
+    while current <= end:
+        chunk_end = min(current + timedelta(days=MAX_CHUNK_DAYS - 1), end)
+        window = {"start": current.date().isoformat(), "end": chunk_end.date().isoformat()}
+        try:
+            frame = get_fund_data(fontip=fontip, bastarih=current.strftime("%d.%m.%Y"),
+                                  bittarih=chunk_end.strftime("%d.%m.%Y"))
+            window.update(frame.attrs["coverage"])
+            if not frame.empty:
+                frames.append(frame)
+        except (FetchError, ValueError) as error:
+            window.update(status="failed", error=str(error))
+        windows.append(window)
+        current = chunk_end + timedelta(days=1)
+    incomplete = [w for w in windows if w["status"] != "ok"]
+    if incomplete and not allow_partial:
+        raise IncompleteHistoryError(f"History has unresolved windows: {incomplete}")
+    if incomplete:
+        warnings.warn("Partial history returned; inspect result.attrs['coverage']", RuntimeWarning)
+    result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(INFO_COLUMNS.values()))
+    result.attrs["coverage"] = {"complete": not incomplete, "windows": windows}
+    return result

@@ -56,6 +56,8 @@ def get_rows(url):
         if cells:
             rows.append(cells)
 
+    if not rows:
+        raise ValueError(f"No KAP table rows at {url}; page structure or availability changed")
     return rows
 
 
@@ -158,6 +160,18 @@ def get_fund_detail2(url_name):
     return df
 
 
+def unique_titles(frame):
+    """Allow identical duplicates; reject ambiguity instead of choosing a value."""
+    frame = frame.copy()
+    frame['TITLE'] = frame['TITLE'].astype('string').str.replace(r'\s+', ' ', regex=True).str.strip()
+    if frame['TITLE'].isna().any() or frame['TITLE'].eq('').any():
+        raise ValueError('Missing KAP fund title')
+    frame = frame.drop_duplicates()
+    if frame.duplicated('TITLE').any():
+        raise ValueError('Conflicting KAP records; resolve multiple values before merging')
+    return frame
+
+
 def get_all():
     """
     Retrieves and merges fund data from multiple categories on the KAP website.
@@ -186,7 +200,7 @@ def get_all():
 
     data1['REPRESENTATIVE'] = pd.Series(np.nan, dtype=str)
     data1.loc[data1['KIND'] == 'YYF', 'REPRESENTATIVE'] = data1['FOUNDER']
-    data1.drop('FOUNDER', axis=1, inplace=True)
+    data1 = data1.rename(columns={'FOUNDER': 'LISTED_FOUNDER'})
 
     data2_founder1 = get_fund_detail(ITEM_URL + "kpy81_acc1_kurucu_unvan")
     data2_founder1.columns = ["TITLE", "FOUNDER"]
@@ -225,19 +239,27 @@ def get_all():
     data2_ipo['IPO_DATE'] = data2_ipo['IPO_DATE'].apply(lambda x: np.nan if (x is None or '-' in x) else x)
 
     # A fund can be listed more than once on the item pages, and duplicates
-    # would multiply rows on every merge, so they are dropped up front
+    # would multiply rows on every merge; conflicting values must be reviewed
     dfs = [data1, data2_founder, data2_isin, data2_rd, data2_pmc, data2_type, data2_ini, data2_auditor, data2_ipo]
-    dfs = [dfs[0]] + [df.drop_duplicates(subset='TITLE') for df in dfs[1:]]
+    dfs = [unique_titles(df) for df in dfs]
+    unmatched = {}
 
     # Merge all DataFrames on the 'TITLE' column
     funds = dfs[0]
 
     for df in dfs[1:]:
-        funds = pd.merge(funds, df, on='TITLE', how='outer')
+        value = df.columns[1]
+        unmatched[value] = sorted(set(df['TITLE']) - set(funds['TITLE']))
+        funds = pd.merge(funds, df, on='TITLE', how='left', validate='one_to_one')
 
     funds['IPO_DATE'] = funds['IPO_DATE'].replace(' ', None)
     funds['IPO_DATE'] = pd.to_datetime(funds['IPO_DATE'], format='%d/%m/%Y', errors='coerce')
 
+    funds['FOUNDER'] = funds['FOUNDER'].combine_first(funds['LISTED_FOUNDER'])
+    funds = funds.drop(columns=['LISTED_FOUNDER'])
+    funds.attrs['quality'] = {'unmatched_detail_titles': unmatched,
+                              'retrieved_at': pd.Timestamp.now(tz='UTC').isoformat(),
+                              'join_key': 'TITLE'}
     return funds
 
 
